@@ -1,6 +1,7 @@
 package com.epam.hubd.spark.scala.sql.homework
 
 import org.apache.spark.sql.types.{StringType, StructField, StructType}
+import org.joda.time.DateTimeZone
 import org.joda.time.format.DateTimeFormat
 
 object Constants {
@@ -14,6 +15,6 @@ object Constants {
 
   val TARGET_LOSAS = Seq("US", "CA", "MX")
 
-  val INPUT_DATE_FORMAT = DateTimeFormat.forPattern("HH-dd-MM-yyyy")
-  val OUTPUT_DATE_FORMAT = DateTimeFormat.forPattern("yyyy-MM-dd HH:mm")
+  val INPUT_DATE_FORMAT = DateTimeFormat.forPattern("HH-dd-MM-yyyy").withZone(DateTimeZone.forID("Europe/Budapest"))
+  val OUTPUT_DATE_FORMAT = DateTimeFormat.forPattern("yyyy-MM-dd HH:mm").withZone(DateTimeZone.forID("Europe/Budapest"))
 }

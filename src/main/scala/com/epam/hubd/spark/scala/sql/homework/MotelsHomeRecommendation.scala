@@ -3,6 +3,11 @@ package com.epam.hubd.spark.scala.sql.homework
 import org.apache.spark.sql.hive.HiveContext
 import org.apache.spark.sql.{DataFrame, UserDefinedFunction}
 import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.functions._
+import org.apache.spark.sql.expressions.Window
+
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 
 object MotelsHomeRecommendation {
 
@@ -82,17 +87,90 @@ object MotelsHomeRecommendation {
       .save(s"$outputBasePath/$AGGREGATED_DIR")
   }
 
-  def getRawBids(sqlContext: HiveContext, bidsPath: String): DataFrame = ???
+  def getRawBids(sqlContext: HiveContext, bidsPath: String): DataFrame =
+    sqlContext.read.parquet(bidsPath)
 
-  def getErroneousRecords(rawBids: DataFrame): DataFrame = ???
+  def getErroneousRecords(rawBids: DataFrame): DataFrame = {
+    import rawBids.sqlContext.implicits._
+    val result = rawBids
+      .filter($"HU".substr(0, 6) === "ERROR_")
+      .withColumnRenamed("HU","ErrorText")
+      .select($"BidDate",$"ErrorText")
+      .groupBy($"BidDate",$"ErrorText")
+      .agg(count("*").alias("ErrorsCount"))
+    return result
+  }
 
-  def getExchangeRates(sqlContext: HiveContext, exchangeRatesPath: String): DataFrame = ???
+  def getExchangeRates(sqlContext: HiveContext, exchangeRatesPath: String): DataFrame = {
+    val exchangeRatesSchema = StructType(Array(
+      StructField("ValidFrom", StringType, false),
+      StructField("CurrencyName", StringType, false),
+      StructField("CurrencyCode", StringType, false),
+      StructField("ExchangeRate", DoubleType, false)))
 
-  def getConvertDate: UserDefinedFunction = ???
+    return sqlContext.read
+      .format("com.databricks.spark.csv")
+      .option("header", "false") // Use first line of all files as header
+      .schema(exchangeRatesSchema)
+      .load(exchangeRatesPath)
+  }
 
-  def getBids(rawBids: DataFrame, exchangeRates: DataFrame): DataFrame = ???
+  def getConvertDate: UserDefinedFunction = {
+    def getConvertDate = (date: String) =>
+      Constants.INPUT_DATE_FORMAT.parseDateTime(date).toString(Constants.OUTPUT_DATE_FORMAT)
+    return udf(getConvertDate)
+  }
 
-  def getMotels(sqlContext: HiveContext, motelsPath: String): DataFrame = ???
+  def getBids(rawBids: DataFrame, exchangeRates: DataFrame): DataFrame = {
+    import rawBids.sqlContext.implicits._
+    val er =
+      exchangeRates
+        .withColumn("ValidFrom",getConvertDate($"ValidFrom"))
+        .select($"ValidFrom", $"ExchangeRate")
 
-  def getEnriched(bids: DataFrame, motels: DataFrame): DataFrame = ???
+    return rawBids
+      .filter($"HU".substr(0,6)!=="ERROR_")
+      .withColumn("Bids",array(Constants.TARGET_LOSAS.map(x => rawBids(x)):_*))
+      .explode[Seq[String],Seq[String]]("Bids","BidTuple")(
+        x => Constants.TARGET_LOSAS
+          .zip(x)
+          .filter(x => !x._2.isEmpty)
+          .map(x => Seq(x._1,x._2))
+      )
+      .withColumn("LoSA",$"BidTuple".getItem(0))
+      .withColumn("Bid",$"BidTuple".getItem(1).cast(new DecimalType(16,3)))
+      .filter(!$"Bid".isNull)
+      .withColumn("BidDate",getConvertDate($"BidDate"))
+      .select($"MotelID",$"BidDate",$"LoSA",$"Bid")
+      .join(er, $"BidDate"===er("ValidFrom"))
+      .withColumn("BidEUR",($"Bid"*$"ExchangeRate").cast(new DecimalType(16,3)))
+      .select($"BidDate",$"LoSA",$"MotelID",$"BidEUR")
+  }
+
+  def getMotels(sqlContext: HiveContext, motelsPath: String): DataFrame =
+    sqlContext.read.parquet(motelsPath)
+
+  def getEnriched(bids: DataFrame, motels: DataFrame): DataFrame = {
+    import bids.sqlContext.implicits._
+
+    // I'm sorry for dirty hack, I'm too tired to search for proper solution
+    def rtrimTwoZeroes = udf((x: String) => x.stripSuffix("0").stripSuffix("0"))
+
+    val motelsNarrow = motels
+      .select($"MotelID",$"MotelName")
+      .withColumnRenamed("MotelID","MotelIDMotels")
+
+    return bids
+      .select($"BidDate",$"LoSA",$"MotelID",$"BidEUR")
+      .withColumn("BidDay",$"BidDate".substr(0,10))
+      .withColumn("MaxBidEUR",
+        max($"BidEUR").over(
+          Window.partitionBy($"BidDate",$"MotelID")
+        ).cast(new DecimalType(16,3))
+      )
+      .filter($"BidEUR"===$"MaxBidEUR")
+      .join(motelsNarrow,$"MotelID"===$"MotelIDMotels")
+      .withColumn("BidEUR",rtrimTwoZeroes($"BidEUR".cast(StringType)))
+      .select($"MotelID",$"MotelName",$"BidDate",$"LoSA",$"BidEUR")
+  }
 }

@@ -57,6 +57,7 @@ class MotelsHomeRecommendationTest {
   private def assertRddTextFiles(expectedPath: String, actualPath: String) = {
     val expected = sc.textFile(expectedPath)
     val actual = sc.textFile(actualPath)
+
     JavaRDDComparisons.assertRDDEquals(expected, actual)
   }
 
